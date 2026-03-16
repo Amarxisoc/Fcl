@@ -48,7 +48,7 @@ extension InitControllerExt on AppController {
     };
     updateTray();
     autoUpdateProfiles();
-    autoCheckUpdate();
+    // autoCheckUpdate(); // disabled: no auto update reminder
     autoLaunch?.updateStatus(_ref.read(appSettingProvider).autoLaunch);
     if (!_ref.read(appSettingProvider).silentLaunch) {
       window?.show();

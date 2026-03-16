@@ -14,7 +14,6 @@ import (
 	"github.com/metacubex/mihomo/component/resolver"
 	"github.com/metacubex/mihomo/config"
 	"github.com/metacubex/mihomo/constant"
-	"github.com/metacubex/mihomo/constant/features"
 	cp "github.com/metacubex/mihomo/constant/provider"
 	"github.com/metacubex/mihomo/hub"
 	"github.com/metacubex/mihomo/hub/executor"
@@ -26,6 +25,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"sync"
 )
 
@@ -33,6 +33,7 @@ var (
 	currentConfig *config.Config
 	version       = 0
 	isRunning     = false
+	defaultTestURL = constant.DefaultTestURL
 	runLock       sync.Mutex
 	mBatch, _     = batch.New[bool](context.Background(), batch.WithConcurrencyNum[bool](50))
 )
@@ -63,7 +64,7 @@ func toExternalProvider(p cp.Provider) (*ExternalProvider, error) {
 			Count:            psp.Count(),
 			UpdateAt:         psp.UpdatedAt(),
 			Path:             psp.Vehicle().Path(),
-			SubscriptionInfo: psp.GetSubscriptionInfo(),
+			SubscriptionInfo: nil,
 		}, nil
 	case *rp.RuleSetProvider:
 		rsp := p.(*rp.RuleSetProvider)
@@ -128,17 +129,49 @@ func updateListeners() {
 	listener.ReCreateShadowSocks(general.ShadowSocksConfig, tunnel.Tunnel)
 	listener.ReCreateVmess(general.VmessConfig, tunnel.Tunnel)
 	listener.ReCreateTuic(general.TuicServer, tunnel.Tunnel)
-	if !features.Android {
+	if runtime.GOOS != "android" {
 		listener.ReCreateTun(general.Tun, tunnel.Tunnel)
 	}
 }
 
 func stopListeners() {
-	listener.StopListener()
+	listener.Cleanup()
+}
+
+func proxiesWithProviders() map[string]constant.Proxy {
+	proxies := make(map[string]constant.Proxy)
+	for name, proxy := range tunnel.Proxies() {
+		proxies[name] = proxy
+	}
+	for _, p := range tunnel.Providers() {
+		for _, proxy := range p.Proxies() {
+			proxies[proxy.Name()] = proxy
+		}
+	}
+	return proxies
+}
+
+func getProxyNameList() []string {
+	proxies := proxiesWithProviders()
+	names := make([]string, 0, len(proxies))
+	for name := range proxies {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	if len(names) == 0 {
+		return names
+	}
+	for i, name := range names {
+		if name == "GLOBAL" {
+			names = append([]string{"GLOBAL"}, append(names[:i], names[i+1:]...)...)
+			break
+		}
+	}
+	return names
 }
 
 func patchSelectGroup(mapping map[string]string) {
-	for name, proxy := range tunnel.ProxiesWithProviders() {
+	for name, proxy := range proxiesWithProviders() {
 		outbound, ok := proxy.(*adapter.Proxy)
 		if !ok {
 			continue
@@ -240,7 +273,7 @@ func applyConfig(params *SetupParams) error {
 	runLock.Lock()
 	defer runLock.Unlock()
 	var err error
-	constant.DefaultTestURL = params.TestURL
+	defaultTestURL = params.TestURL
 	currentConfig, err = executor.ParseWithPath(filepath.Join(constant.Path.HomeDir(), "config.yaml"))
 	if err != nil {
 		currentConfig, _ = config.ParseRawConfig(config.DefaultRawConfig())

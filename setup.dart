@@ -459,7 +459,7 @@ class BuildCommand extends Command {
 
     String? coreSha256;
 
-    if (Platform.isWindows) {
+    if (Platform.isWindows && target == Target.windows) {
       coreSha256 = await Build.calcSha256(corePaths.first);
       await Build.buildHelper(target, coreSha256);
     }
@@ -505,12 +505,11 @@ class BuildCommand extends Command {
             .where((element) => arch == null ? true : element == arch)
             .map((e) => targetMap[e])
             .toList();
-        _buildDistributor(
-          target: target,
-          targets: 'apk',
-          args:
-              ",split-per-abi --build-target-platform ${defaultTargets.join(",")}",
-          env: env,
+        await Build.exec(
+          Build.getExecutable(
+            'flutter build apk --release --split-per-abi --target-platform ${defaultTargets.join(",")} --dart-define-from-file=env.json -v',
+          ),
+          name: name,
         );
         return;
       case Target.macos:

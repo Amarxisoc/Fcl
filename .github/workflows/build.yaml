@@ -4,11 +4,24 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      kkihos_repository:
+        description: 'Kernel repository (owner/name)'
+        required: false
+        default: 'Amarxisoc/kkihos'
+      kkihos_ref:
+        description: 'Kernel branch/tag/ref'
+        required: false
+        default: 'alpha-xhttp-dev2'
 env:
   IS_STABLE: ${{ !contains(github.ref, '-') }}
+  KKIHOS_REPOSITORY: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.kkihos_repository || 'Amarxisoc/kkihos' }}
+  KKIHOS_REF: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.kkihos_ref || 'alpha-xhttp-dev2' }}
 
 jobs:
   build:
+    if: ${{ github.event_name == 'push' }}
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -48,6 +61,13 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Checkout kkihos
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.KKIHOS_REPOSITORY }}
+          ref: ${{ env.KKIHOS_REF }}
+          path: kkihos
+
       - name: Setup Android Signing
         if: startsWith(matrix.platform,'android')
         run: |
@@ -63,6 +83,9 @@ jobs:
           go-version: '1.24.0'
           cache-dependency-path: |
             core/go.sum
+
+      - name: Patch kernel replace path
+        run: go -C core mod edit -replace github.com/metacubex/mihomo=../kkihos
 
       - name: Setup Flutter
         if: ${{ !(startsWith(matrix.os, 'windows-11-arm') || startsWith(matrix.os, 'ubuntu-24.04-arm')) }}
@@ -94,7 +117,251 @@ jobs:
           path: ./dist
           overwrite: true
 
+  build_core_matrix:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - go_version: '1.26.1'
+            go_name: 'go1.26.1'
+            goos: windows
+            goarch: amd64
+            ext: .exe
+          - go_version: '1.26.1'
+            go_name: 'go1.26.1'
+            goos: windows
+            goarch: arm64
+            ext: .exe
+          - go_version: '1.26.1'
+            go_name: 'go1.26.1'
+            goos: darwin
+            goarch: amd64
+            ext: ''
+          - go_version: '1.26.1'
+            go_name: 'go1.26.1'
+            goos: darwin
+            goarch: arm64
+            ext: ''
+          - go_version: '1.20.14'
+            go_name: 'go1.20.14'
+            goos: windows
+            goarch: amd64
+            ext: .exe
+          - go_version: '1.20.14'
+            go_name: 'go1.20.14'
+            goos: windows
+            goarch: arm64
+            ext: .exe
+          - go_version: '1.20.14'
+            go_name: 'go1.20.14'
+            goos: darwin
+            goarch: amd64
+            ext: ''
+          - go_version: '1.20.14'
+            go_name: 'go1.20.14'
+            goos: darwin
+            goarch: arm64
+            ext: ''
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Checkout kkihos
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.KKIHOS_REPOSITORY }}
+          ref: ${{ env.KKIHOS_REF }}
+          path: kkihos
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go_version }}
+          cache-dependency-path: |
+            core/go.sum
+
+      - name: Patch kernel replace path
+        run: go -C core mod edit -replace github.com/metacubex/mihomo=../kkihos
+
+      - name: Build core
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build_artifacts/gha-core
+          out="build_artifacts/gha-core/FlClashCore-${{ matrix.go_name }}-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}"
+          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 \
+            go -C core build -ldflags='-w -s' -tags='with_gvisor' -o "$out" .
+          ls -lh "$out"
+
+      - name: Upload core artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-${{ matrix.go_name }}-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: build_artifacts/gha-core/FlClashCore-${{ matrix.go_name }}-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}
+          overwrite: true
+
+  build_macos_dmg:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15-intel
+            arch: amd64
+          - os: macos-latest
+            arch: arm64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Checkout kkihos
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.KKIHOS_REPOSITORY }}
+          ref: ${{ env.KKIHOS_REF }}
+          path: kkihos
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.1'
+          cache-dependency-path: |
+            core/go.sum
+
+      - name: Patch kernel replace path
+        run: go -C core mod edit -replace github.com/metacubex/mihomo=../kkihos
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.35.7
+          cache: true
+
+      - name: Get Flutter Dependency
+        run: |
+          flutter --version
+          flutter pub get
+
+      - name: Build macOS dmg
+        run: dart setup.dart macos --arch ${{ matrix.arch }} --out app
+
+      - name: Upload dmg artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dmg-macos-${{ matrix.arch }}
+          path: |
+            ./dist/*macos*${{ matrix.arch }}*.dmg
+            ./dist/*darwin*${{ matrix.arch }}*.dmg
+          overwrite: true
+
+  build_windows_package_amd64:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Checkout kkihos
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.KKIHOS_REPOSITORY }}
+          ref: ${{ env.KKIHOS_REF }}
+          path: kkihos
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.1'
+          cache-dependency-path: |
+            core/go.sum
+
+      - name: Patch kernel replace path
+        run: go -C core mod edit -replace github.com/metacubex/mihomo=../kkihos
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.35.7
+          cache: true
+
+      - name: Get Flutter Dependency
+        run: |
+          flutter --version
+          flutter pub get
+
+      - name: Build Windows package (amd64)
+        run: dart setup.dart windows --arch amd64 --out app
+
+      - name: Upload Windows package artifact (amd64)
+        uses: actions/upload-artifact@v4
+        with:
+          name: winpkg-amd64
+          path: |
+            ./dist/*windows*amd64*.exe
+            ./dist/*windows*amd64*.zip
+          overwrite: true
+
+  build_windows_package_arm64:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Checkout kkihos
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.KKIHOS_REPOSITORY }}
+          ref: ${{ env.KKIHOS_REF }}
+          path: kkihos
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.1'
+          cache-dependency-path: |
+            core/go.sum
+
+      - name: Patch kernel replace path
+        run: go -C core mod edit -replace github.com/metacubex/mihomo=../kkihos
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.35.7
+          cache: true
+
+      - name: Get Flutter Dependency
+        run: |
+          flutter --version
+          flutter pub get
+
+      - name: Build Windows package (arm64)
+        run: dart setup.dart windows --arch arm64 --out app
+
+      - name: Upload Windows package artifact (arm64)
+        uses: actions/upload-artifact@v4
+        with:
+          name: winpkg-arm64
+          path: |
+            ./dist/*windows*arm64*.exe
+            ./dist/*windows*arm64*.zip
+          overwrite: true
+
   changelog:
+    if: ${{ github.event_name == 'push' }}
     runs-on: ubuntu-latest
     needs: [ build ]
     steps:
@@ -150,6 +417,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   upload:
+    if: ${{ github.event_name == 'push' }}
     permissions: write-all
     needs: [ build ]
     runs-on: ubuntu-latest

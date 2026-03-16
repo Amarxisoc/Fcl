@@ -15,8 +15,8 @@ import (
 	"errors"
 	"github.com/metacubex/mihomo/component/dialer"
 	"github.com/metacubex/mihomo/component/process"
+	"github.com/metacubex/mihomo/component/resolver"
 	"github.com/metacubex/mihomo/constant"
-	"github.com/metacubex/mihomo/dns"
 	"github.com/metacubex/mihomo/listener/sing_tun"
 	"github.com/metacubex/mihomo/log"
 	"golang.org/x/sync/semaphore"
@@ -154,8 +154,8 @@ func handleStartTun(callback unsafe.Pointer, fd int, stack, address, dns string)
 func handleUpdateDns(value string) {
 	go func() {
 		log.Infoln("[DNS] updateDns %s", value)
-		dns.UpdateSystemDNS(strings.Split(value, ","))
-		dns.FlushCacheWithDefaultResolver()
+		_ = strings.Split(value, ",")
+		resolver.ResetConnection()
 	}()
 }
 
