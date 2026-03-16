@@ -2,6 +2,8 @@ name: build
 
 on:
   push:
+    branches:
+      - 'alpha-xhttp-fldev1'
     tags:
       - 'v*'
   workflow_dispatch:
@@ -18,10 +20,11 @@ env:
   IS_STABLE: ${{ !contains(github.ref, '-') }}
   KKIHOS_REPOSITORY: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.kkihos_repository || 'Amarxisoc/kkihos' }}
   KKIHOS_REF: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.kkihos_ref || 'alpha-xhttp-dev2' }}
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
 jobs:
   build:
-    if: ${{ github.event_name == 'push' }}
+    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -61,12 +64,19 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Sync submodules over HTTPS
+        shell: bash
+        run: |
+          git config --global url."https://github.com/".insteadOf git@github.com:
+          git submodule sync --recursive
+          git submodule update --init --recursive --depth 1
+
       - name: Checkout kkihos
         uses: actions/checkout@v4
         with:
           repository: ${{ env.KKIHOS_REPOSITORY }}
           ref: ${{ env.KKIHOS_REF }}
-          path: kkihos
+          path: core/kkihos
 
       - name: Setup Android Signing
         if: startsWith(matrix.platform,'android')
@@ -85,7 +95,23 @@ jobs:
             core/go.sum
 
       - name: Patch kernel replace path
-        run: go -C core mod edit -replace github.com/metacubex/mihomo=../kkihos
+        working-directory: core
+        run: go mod edit -replace github.com/metacubex/mihomo=./kkihos
+
+      - name: Verify kkihos linkage
+        shell: bash
+        working-directory: core
+        run: |
+          set -euo pipefail
+          echo "KKIHOS_REPOSITORY=${{ env.KKIHOS_REPOSITORY }}"
+          echo "KKIHOS_REF=${{ env.KKIHOS_REF }}"
+          git -C ./kkihos rev-parse --short HEAD
+          mod_dir="$(go list -m -f '{{.Dir}}' github.com/metacubex/mihomo)"
+          echo "mihomo module dir: ${mod_dir}"
+          case "$mod_dir" in
+            *"/kkihos"|*"\\kkihos") ;;
+            *) echo "Kernel is not linked to ./kkihos"; exit 1 ;;
+          esac
 
       - name: Setup Flutter
         if: ${{ !(startsWith(matrix.os, 'windows-11-arm') || startsWith(matrix.os, 'ubuntu-24.04-arm')) }}
@@ -118,50 +144,23 @@ jobs:
           overwrite: true
 
   build_core_matrix:
-    if: ${{ github.event_name == 'workflow_dispatch' }}
+    if: ${{ github.event_name == 'workflow_dispatch' || github.ref_name == 'alpha-xhttp-fldev1' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - go_version: '1.26.1'
-            go_name: 'go1.26.1'
-            goos: windows
+        go_version: ['1.26.1', '1.25.8', '1.24.13', '1.23.12', '1.22.12', '1.21.13', '1.20.14']
+        target:
+          - goos: windows
             goarch: amd64
             ext: .exe
-          - go_version: '1.26.1'
-            go_name: 'go1.26.1'
-            goos: windows
+          - goos: windows
             goarch: arm64
             ext: .exe
-          - go_version: '1.26.1'
-            go_name: 'go1.26.1'
-            goos: darwin
+          - goos: darwin
             goarch: amd64
             ext: ''
-          - go_version: '1.26.1'
-            go_name: 'go1.26.1'
-            goos: darwin
-            goarch: arm64
-            ext: ''
-          - go_version: '1.20.14'
-            go_name: 'go1.20.14'
-            goos: windows
-            goarch: amd64
-            ext: .exe
-          - go_version: '1.20.14'
-            go_name: 'go1.20.14'
-            goos: windows
-            goarch: arm64
-            ext: .exe
-          - go_version: '1.20.14'
-            go_name: 'go1.20.14'
-            goos: darwin
-            goarch: amd64
-            ext: ''
-          - go_version: '1.20.14'
-            go_name: 'go1.20.14'
-            goos: darwin
+          - goos: darwin
             goarch: arm64
             ext: ''
     steps:
@@ -173,7 +172,7 @@ jobs:
         with:
           repository: ${{ env.KKIHOS_REPOSITORY }}
           ref: ${{ env.KKIHOS_REF }}
-          path: kkihos
+          path: core/kkihos
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -183,32 +182,233 @@ jobs:
             core/go.sum
 
       - name: Patch kernel replace path
-        run: go -C core mod edit -replace github.com/metacubex/mihomo=../kkihos
+        working-directory: core
+        run: go mod edit -replace github.com/metacubex/mihomo=./kkihos
+
+      - name: Verify kkihos linkage
+        shell: bash
+        working-directory: core
+        run: |
+          set -euo pipefail
+          echo "KKIHOS_REPOSITORY=${{ env.KKIHOS_REPOSITORY }}"
+          echo "KKIHOS_REF=${{ env.KKIHOS_REF }}"
+          git -C ./kkihos rev-parse --short HEAD
+          mod_dir="$(go list -m -f '{{.Dir}}' github.com/metacubex/mihomo)"
+          echo "mihomo module dir: ${mod_dir}"
+          case "$mod_dir" in
+            *"/kkihos"|*"\\kkihos") ;;
+            *) echo "Kernel is not linked to ./kkihos"; exit 1 ;;
+          esac
 
       - name: Build core
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p build_artifacts/gha-core
-          out="build_artifacts/gha-core/FlClashCore-${{ matrix.go_name }}-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}"
-          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 \
-            go -C core build -ldflags='-w -s' -tags='with_gvisor' -o "$out" .
-          ls -lh "$out"
+          out="build_artifacts/gha-core/FlClashCore-go${{ matrix.go_version }}-${{ matrix.target.goos }}-${{ matrix.target.goarch }}${{ matrix.target.ext }}"
+          GOOS=${{ matrix.target.goos }} GOARCH=${{ matrix.target.goarch }} CGO_ENABLED=0 \
+            go build -ldflags='-w -s' -tags='with_gvisor' -o "../$out" .
+          ls -lh "../$out"
+        working-directory: core
 
       - name: Upload core artifact
         uses: actions/upload-artifact@v4
         with:
-          name: core-${{ matrix.go_name }}-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: build_artifacts/gha-core/FlClashCore-${{ matrix.go_name }}-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}
+          name: core-go${{ matrix.go_version }}-${{ matrix.target.goos }}-${{ matrix.target.goarch }}
+          path: build_artifacts/gha-core/FlClashCore-go${{ matrix.go_version }}-${{ matrix.target.goos }}-${{ matrix.target.goarch }}${{ matrix.target.ext }}
           overwrite: true
 
-  build_macos_dmg:
-    if: ${{ github.event_name == 'workflow_dispatch' }}
-    runs-on: ${{ matrix.os }}
+  build_android_core_matrix:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.ref_name == 'alpha-xhttp-fldev1' }}
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        include:
+        go_version: ['1.26.1', '1.25.8', '1.24.13', '1.23.12', '1.22.12', '1.21.13', '1.20.14']
+        android_target:
+          - arch: arm64
+            arch_name: arm64-v8a
+          - arch: arm
+            arch_name: armeabi-v7a
+          - arch: amd64
+            arch_name: x86_64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Sync submodules over HTTPS
+        shell: bash
+        run: |
+          git config --global url."https://github.com/".insteadOf git@github.com:
+          git submodule sync --recursive
+          git submodule update --init --recursive --depth 1
+
+      - name: Checkout kkihos
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.KKIHOS_REPOSITORY }}
+          ref: ${{ env.KKIHOS_REF }}
+          path: core/kkihos
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go_version }}
+          cache-dependency-path: |
+            core/go.sum
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.35.7
+          cache: true
+
+      - name: Setup NDK
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r29-beta1
+
+      - name: Export Android NDK
+        run: echo "ANDROID_NDK=${{ steps.setup-ndk.outputs.ndk-path }}" >> $GITHUB_ENV
+
+      - name: Patch kernel replace path
+        working-directory: core
+        run: go mod edit -replace github.com/metacubex/mihomo=./kkihos
+
+      - name: Verify kkihos linkage
+        shell: bash
+        working-directory: core
+        run: |
+          set -euo pipefail
+          echo "KKIHOS_REPOSITORY=${{ env.KKIHOS_REPOSITORY }}"
+          echo "KKIHOS_REF=${{ env.KKIHOS_REF }}"
+          git -C ./kkihos rev-parse --short HEAD
+          mod_dir="$(go list -m -f '{{.Dir}}' github.com/metacubex/mihomo)"
+          echo "mihomo module dir: ${mod_dir}"
+          case "$mod_dir" in
+            *"/kkihos"|*"\\kkihos") ;;
+            *) echo "Kernel is not linked to ./kkihos"; exit 1 ;;
+          esac
+
+      - name: Get Flutter Dependency
+        run: |
+          flutter --version
+          flutter pub get
+
+      - name: Build Android core
+        run: dart setup.dart android --arch ${{ matrix.android_target.arch }} --out core
+
+      - name: Upload Android core artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-core-go${{ matrix.go_version }}-${{ matrix.android_target.arch_name }}
+          path: |
+            ./libclash/android/${{ matrix.android_target.arch_name }}/libclash.so
+            ./libclash/android/includes/${{ matrix.android_target.arch_name }}/*.h
+          overwrite: true
+
+  build_android_apk:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.ref_name == 'alpha-xhttp-fldev1' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        go_version: ['1.26.1', '1.25.8', '1.24.13', '1.23.12', '1.22.12', '1.21.13', '1.20.14']
+        android_target:
+          - arch: arm64
+            arch_name: arm64-v8a
+          - arch: arm
+            arch_name: armeabi-v7a
+          - arch: amd64
+            arch_name: x86_64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Sync submodules over HTTPS
+        shell: bash
+        run: |
+          git config --global url."https://github.com/".insteadOf git@github.com:
+          git submodule sync --recursive
+          git submodule update --init --recursive --depth 1
+
+      - name: Checkout kkihos
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.KKIHOS_REPOSITORY }}
+          ref: ${{ env.KKIHOS_REF }}
+          path: core/kkihos
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go_version }}
+          cache-dependency-path: |
+            core/go.sum
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.35.7
+          cache: true
+
+      - name: Setup Android Signing
+        run: |
+          echo "${{ secrets.KEYSTORE }}" | base64 --decode > android/app/keystore.jks
+          echo "${{ secrets.SERVICE_JSON }}" | base64 --decode > android/app/google-services.json
+          echo "keyAlias=${{ secrets.KEY_ALIAS }}" >> android/local.properties
+          echo "storePassword=${{ secrets.STORE_PASSWORD }}" >> android/local.properties
+          echo "keyPassword=${{ secrets.KEY_PASSWORD }}" >> android/local.properties
+
+      - name: Patch kernel replace path
+        working-directory: core
+        run: go mod edit -replace github.com/metacubex/mihomo=./kkihos
+
+      - name: Verify kkihos linkage
+        shell: bash
+        working-directory: core
+        run: |
+          set -euo pipefail
+          echo "KKIHOS_REPOSITORY=${{ env.KKIHOS_REPOSITORY }}"
+          echo "KKIHOS_REF=${{ env.KKIHOS_REF }}"
+          git -C ./kkihos rev-parse --short HEAD
+          mod_dir="$(go list -m -f '{{.Dir}}' github.com/metacubex/mihomo)"
+          echo "mihomo module dir: ${mod_dir}"
+          case "$mod_dir" in
+            *"/kkihos"|*"\\kkihos") ;;
+            *) echo "Kernel is not linked to ./kkihos"; exit 1 ;;
+          esac
+
+      - name: Get Flutter Dependency
+        run: |
+          flutter --version
+          flutter pub get
+
+      - name: Build Android APK
+        run: dart setup.dart android --arch ${{ matrix.android_target.arch }} --out app
+
+      - name: Upload Android APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-go${{ matrix.go_version }}-${{ matrix.android_target.arch_name }}
+          path: |
+            ./build/app/outputs/flutter-apk/*${{ matrix.android_target.arch_name }}*.apk
+            ./build/app/outputs/flutter-apk/*.apk
+          overwrite: true
+
+  build_macos_dmg:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.ref_name == 'alpha-xhttp-fldev1' }}
+    runs-on: ${{ matrix.mac_target.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        go_version: ['1.26.1', '1.25.8', '1.24.13', '1.23.12', '1.22.12', '1.21.13', '1.20.14']
+        mac_target:
           - os: macos-15-intel
             arch: amd64
           - os: macos-latest
@@ -219,22 +419,45 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Sync submodules over HTTPS
+        shell: bash
+        run: |
+          git config --global url."https://github.com/".insteadOf git@github.com:
+          git submodule sync --recursive
+          git submodule update --init --recursive --depth 1
+
       - name: Checkout kkihos
         uses: actions/checkout@v4
         with:
           repository: ${{ env.KKIHOS_REPOSITORY }}
           ref: ${{ env.KKIHOS_REF }}
-          path: kkihos
+          path: core/kkihos
 
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.26.1'
+          go-version: ${{ matrix.go_version }}
           cache-dependency-path: |
             core/go.sum
 
       - name: Patch kernel replace path
-        run: go -C core mod edit -replace github.com/metacubex/mihomo=../kkihos
+        working-directory: core
+        run: go mod edit -replace github.com/metacubex/mihomo=./kkihos
+
+      - name: Verify kkihos linkage
+        shell: bash
+        working-directory: core
+        run: |
+          set -euo pipefail
+          echo "KKIHOS_REPOSITORY=${{ env.KKIHOS_REPOSITORY }}"
+          echo "KKIHOS_REF=${{ env.KKIHOS_REF }}"
+          git -C ./kkihos rev-parse --short HEAD
+          mod_dir="$(go list -m -f '{{.Dir}}' github.com/metacubex/mihomo)"
+          echo "mihomo module dir: ${mod_dir}"
+          case "$mod_dir" in
+            *"/kkihos"|*"\\kkihos") ;;
+            *) echo "Kernel is not linked to ./kkihos"; exit 1 ;;
+          esac
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -249,42 +472,69 @@ jobs:
           flutter pub get
 
       - name: Build macOS dmg
-        run: dart setup.dart macos --arch ${{ matrix.arch }} --out app
+        run: dart setup.dart macos --arch ${{ matrix.mac_target.arch }} --out app
 
       - name: Upload dmg artifact
         uses: actions/upload-artifact@v4
         with:
-          name: dmg-macos-${{ matrix.arch }}
+          name: dmg-go${{ matrix.go_version }}-macos-${{ matrix.mac_target.arch }}
           path: |
-            ./dist/*macos*${{ matrix.arch }}*.dmg
-            ./dist/*darwin*${{ matrix.arch }}*.dmg
+            ./dist/*macos*${{ matrix.mac_target.arch }}*.dmg
+            ./dist/*darwin*${{ matrix.mac_target.arch }}*.dmg
           overwrite: true
 
   build_windows_package_amd64:
-    if: ${{ github.event_name == 'workflow_dispatch' }}
+    if: ${{ github.event_name == 'workflow_dispatch' || github.ref_name == 'alpha-xhttp-fldev1' }}
     runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        go_version: ['1.26.1', '1.25.8', '1.24.13', '1.23.12', '1.22.12', '1.21.13', '1.20.14']
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           submodules: recursive
 
+      - name: Sync submodules over HTTPS
+        shell: bash
+        run: |
+          git config --global url."https://github.com/".insteadOf git@github.com:
+          git submodule sync --recursive
+          git submodule update --init --recursive --depth 1
+
       - name: Checkout kkihos
         uses: actions/checkout@v4
         with:
           repository: ${{ env.KKIHOS_REPOSITORY }}
           ref: ${{ env.KKIHOS_REF }}
-          path: kkihos
+          path: core/kkihos
 
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.26.1'
+          go-version: ${{ matrix.go_version }}
           cache-dependency-path: |
             core/go.sum
 
       - name: Patch kernel replace path
-        run: go -C core mod edit -replace github.com/metacubex/mihomo=../kkihos
+        working-directory: core
+        run: go mod edit -replace github.com/metacubex/mihomo=./kkihos
+
+      - name: Verify kkihos linkage
+        shell: bash
+        working-directory: core
+        run: |
+          set -euo pipefail
+          echo "KKIHOS_REPOSITORY=${{ env.KKIHOS_REPOSITORY }}"
+          echo "KKIHOS_REF=${{ env.KKIHOS_REF }}"
+          git -C ./kkihos rev-parse --short HEAD
+          mod_dir="$(go list -m -f '{{.Dir}}' github.com/metacubex/mihomo)"
+          echo "mihomo module dir: ${mod_dir}"
+          case "$mod_dir" in
+            *"/kkihos"|*"\\kkihos") ;;
+            *) echo "Kernel is not linked to ./kkihos"; exit 1 ;;
+          esac
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -304,37 +554,64 @@ jobs:
       - name: Upload Windows package artifact (amd64)
         uses: actions/upload-artifact@v4
         with:
-          name: winpkg-amd64
+          name: winpkg-go${{ matrix.go_version }}-amd64
           path: |
             ./dist/*windows*amd64*.exe
             ./dist/*windows*amd64*.zip
           overwrite: true
 
   build_windows_package_arm64:
-    if: ${{ github.event_name == 'workflow_dispatch' }}
+    if: ${{ github.event_name == 'workflow_dispatch' || github.ref_name == 'alpha-xhttp-fldev1' }}
     runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        go_version: ['1.26.1', '1.25.8', '1.24.13', '1.23.12', '1.22.12', '1.21.13', '1.20.14']
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           submodules: recursive
 
+      - name: Sync submodules over HTTPS
+        shell: bash
+        run: |
+          git config --global url."https://github.com/".insteadOf git@github.com:
+          git submodule sync --recursive
+          git submodule update --init --recursive --depth 1
+
       - name: Checkout kkihos
         uses: actions/checkout@v4
         with:
           repository: ${{ env.KKIHOS_REPOSITORY }}
           ref: ${{ env.KKIHOS_REF }}
-          path: kkihos
+          path: core/kkihos
 
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.26.1'
+          go-version: ${{ matrix.go_version }}
           cache-dependency-path: |
             core/go.sum
 
       - name: Patch kernel replace path
-        run: go -C core mod edit -replace github.com/metacubex/mihomo=../kkihos
+        working-directory: core
+        run: go mod edit -replace github.com/metacubex/mihomo=./kkihos
+
+      - name: Verify kkihos linkage
+        shell: bash
+        working-directory: core
+        run: |
+          set -euo pipefail
+          echo "KKIHOS_REPOSITORY=${{ env.KKIHOS_REPOSITORY }}"
+          echo "KKIHOS_REF=${{ env.KKIHOS_REF }}"
+          git -C ./kkihos rev-parse --short HEAD
+          mod_dir="$(go list -m -f '{{.Dir}}' github.com/metacubex/mihomo)"
+          echo "mihomo module dir: ${mod_dir}"
+          case "$mod_dir" in
+            *"/kkihos"|*"\\kkihos") ;;
+            *) echo "Kernel is not linked to ./kkihos"; exit 1 ;;
+          esac
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -354,14 +631,14 @@ jobs:
       - name: Upload Windows package artifact (arm64)
         uses: actions/upload-artifact@v4
         with:
-          name: winpkg-arm64
+          name: winpkg-go${{ matrix.go_version }}-arm64
           path: |
             ./dist/*windows*arm64*.exe
             ./dist/*windows*arm64*.zip
           overwrite: true
 
   changelog:
-    if: ${{ github.event_name == 'push' }}
+    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     needs: [ build ]
     steps:
@@ -417,7 +694,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   upload:
-    if: ${{ github.event_name == 'push' }}
+    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
     permissions: write-all
     needs: [ build ]
     runs-on: ubuntu-latest
